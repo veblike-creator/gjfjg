@@ -2,7 +2,7 @@ import os
 import logging
 import asyncio
 import aiosqlite
-import requests
+import aiohttp
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -210,19 +210,27 @@ class Database:
 async def upload_to_telegraph(photo_bytes):
     """Загружает фото на Telegraph и возвращает URL"""
     try:
-        response = requests.post(
-            'https://telegra.ph/upload',
-            files={'file': ('image.jpg', photo_bytes, 'image/jpeg')}
-        )
-        result = response.json()
+        async with aiohttp.ClientSession() as session:
+            form = aiohttp.FormData()
+            form.add_field('file', photo_bytes, filename='image.jpg', content_type='image/jpeg')
 
-        # Проверяем формат ответа
-        if isinstance(result, list) and len(result) > 0:
-            if 'src' in result[0]:
-                return f"https://telegra.ph{result[0]['src']}"
+            async with session.post('https://telegra.ph/upload', data=form) as response:
+                result = await response.json()
 
-        logger.error(f"Telegraph unexpected response: {result}")
-        return None
+                logger.info(f"Telegraph response: {result}")
+
+                # Проверяем формат ответа
+                if isinstance(result, list) and len(result) > 0:
+                    if isinstance(result[0], dict) and 'src' in result[0]:
+                        return f"https://telegra.ph{result[0]['src']}"
+
+                # Если ответ - ошибка
+                if isinstance(result, dict) and 'error' in result:
+                    logger.error(f"Telegraph error: {result['error']}")
+                else:
+                    logger.error(f"Telegraph unexpected response: {result}")
+
+                return None
     except Exception as e:
         logger.error(f"Telegraph upload error: {e}")
         return None
@@ -253,39 +261,41 @@ async def generate_seededit(prompt, photo_path):
             'Authorization': f'Bearer {GENAPI_KEY}'
         }
 
-        url_endpoint = "https://api.gen-api.ru/api/v1/networks/seededit"
-        response = requests.post(url_endpoint, json=payload, headers=headers)
+        async with aiohttp.ClientSession() as session:
+            url_endpoint = "https://api.gen-api.ru/api/v1/networks/seededit"
 
-        logger.info(f"SeedEdit response: {response.status_code} - {response.text}")
+            async with session.post(url_endpoint, json=payload, headers=headers) as response:
+                response_text = await response.text()
+                logger.info(f"SeedEdit response: {response.status} - {response_text}")
 
-        if response.status_code != 200:
-            logger.error(f"SeedEdit error: {response.status_code} - {response.text}")
-            return None
+                if response.status != 200:
+                    logger.error(f"SeedEdit error: {response.status} - {response_text}")
+                    return None
 
-        result = response.json()
+                result = await response.json()
 
-        if result.get('error'):
-            logger.error(f"SeedEdit API error: {result}")
-            return None
+                if result.get('error'):
+                    logger.error(f"SeedEdit API error: {result}")
+                    return None
 
-        task_id = result.get('task_id')
+                task_id = result.get('task_id')
 
-        for _ in range(60):
-            await asyncio.sleep(5)
+                # Проверяем статус задачи
+                for _ in range(60):
+                    await asyncio.sleep(5)
 
-            check_response = requests.get(
-                f"https://api.gen-api.ru/api/v1/tasks/{task_id}",
-                headers={'Authorization': f'Bearer {GENAPI_KEY}'}
-            )
+                    async with session.get(
+                        f"https://api.gen-api.ru/api/v1/tasks/{task_id}",
+                        headers={'Authorization': f'Bearer {GENAPI_KEY}'}
+                    ) as check_response:
+                        check_result = await check_response.json()
+                        status = check_result.get('status')
 
-            check_result = check_response.json()
-            status = check_result.get('status')
-
-            if status == 'completed':
-                return check_result.get('result', {}).get('images', [None])[0]
-            elif status == 'failed':
-                logger.error(f"Task failed: {check_result}")
-                return None
+                        if status == 'completed':
+                            return check_result.get('result', {}).get('images', [None])[0]
+                        elif status == 'failed':
+                            logger.error(f"Task failed: {check_result}")
+                            return None
 
         return None
 
@@ -297,7 +307,6 @@ async def get_ai_response(prompt, model, user_id):
     try:
         history = await db.get_history(user_id, model)
 
-        # Используем AITunnel API с правильным форматом
         headers = {
             "Authorization": f"Bearer {AITUNNEL_KEY}",
             "Content-Type": "application/json"
@@ -307,32 +316,33 @@ async def get_ai_response(prompt, model, user_id):
 
         payload = {
             "model": model,
-            "messages": messages
+            "messages": messages,
+            "max_tokens": 50000
         }
 
         logger.info(f"Sending to AITunnel: model={model}")
 
-        response = requests.post(
-            "https://api.aitunnel.ru/v1/chat/completions",
-            json=payload,
-            headers=headers,
-            timeout=60
-        )
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.aitunnel.ru/v1/chat/completions",
+                json=payload,
+                headers=headers
+            ) as response:
+                logger.info(f"AITunnel response: {response.status}")
 
-        logger.info(f"AITunnel response: {response.status_code}")
+                if response.status == 200:
+                    result = await response.json()
+                    ai_response = result["choices"][0]["message"]["content"]
 
-        if response.status_code == 200:
-            result = response.json()
-            ai_response = result["choices"][0]["message"]["content"]
+                    # Сохраняем в историю
+                    await db.add_message(user_id, model, "user", prompt)
+                    await db.add_message(user_id, model, "assistant", ai_response)
 
-            # Сохраняем в историю
-            await db.add_message(user_id, model, "user", prompt)
-            await db.add_message(user_id, model, "assistant", ai_response)
-
-            return ai_response
-        else:
-            logger.error(f"AITunnel error {response.status_code}: {response.text}")
-            return f"❌ Ошибка API: {response.status_code}"
+                    return ai_response
+                else:
+                    error_text = await response.text()
+                    logger.error(f"AITunnel error {response.status}: {error_text}")
+                    return f"❌ Ошибка API: {response.status}"
 
     except Exception as e:
         logger.error(f"AI error: {e}")
