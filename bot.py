@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-BOT_TOKEN = "8217361037:AAEgJ6NugPqXDNXstIOL5g7R1ovBxsLAWM"
+BOT_TOKEN = "8217361037:AAEgJ6NugPqXDNX_stIOL5g7R1ovBxsLAWM"
 AITUNNEL_KEY = "sk-aitunnel-9ho4TkDH1Vxr0koqvpQtPS1mL2Yyv1v8"
 GENAPI_KEY = "sk-dd7I7EH6Gtg0zBTDManlSPCLoBN8rQPAatfF57GFebec8vgBHVbnx15JTKMa"
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6387718314"))
@@ -215,9 +215,6 @@ async def upload_to_telegraph(photo_bytes):
             form.add_field('file', photo_bytes, filename='image.jpg', content_type='image/jpeg')
 
             async with session.post('https://telegra.ph/upload', data=form) as response:
-                if response.status != 200:
-                    logger.error(f"Telegraph HTTP {response.status}: {await response.text()}")
-                    return None
                 result = await response.json()
 
                 logger.info(f"Telegraph response: {result}")
@@ -352,13 +349,6 @@ async def get_ai_response(prompt, model, user_id):
         return "❌ Произошла ошибка при обработке запроса"
 
 # Инициализация
-
-# Проверка токена при запуске БОТА
-if not BOT_TOKEN:
-    print("❌ ОШИБКА: BOT_TOKEN пустой!")
-    exit(1)
-
-print(f"✅ Используется токен: {BOT_TOKEN[:20]}...")
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 db = Database()
