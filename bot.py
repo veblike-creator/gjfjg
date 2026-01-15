@@ -15,9 +15,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-AITUNNEL_KEY = os.getenv("AITUNNEL_KEY")
-GENAPI_KEY = os.getenv("GENAPI_KEY")
+BOT_TOKEN = "8217361037:AAEgJ6NugPqXDNXstIOL5g7R1ovBxsLAWM"
+AITUNNEL_KEY = "sk-aitunnel-9ho4TkDH1Vxr0koqvpQtPS1mL2Yyv1v8"
+GENAPI_KEY = "sk-dd7I7EH6Gtg0zBTDManlSPCLoBN8rQPAatfF57GFebec8vgBHVbnx15JTKMa"
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6387718314"))
 DB_PATH = "/app/bot.db"
 
@@ -212,11 +212,15 @@ async def upload_to_telegraph(photo_bytes):
     try:
         async with aiohttp.ClientSession() as session:
             form = aiohttp.FormData()
+            # Fix: add photo bytes as file with proper content type
             form.add_field('file', photo_bytes, filename='image.jpg', content_type='image/jpeg')
 
             async with session.post('https://telegra.ph/upload', data=form) as response:
-                result = await response.json()
+                if response.status != 200:
+                    logger.error(f"Telegraph HTTP error: {response.status}")
+                    return None
 
+                result = await response.json()
                 logger.info(f"Telegraph response: {result}")
 
                 # Проверяем формат ответа
