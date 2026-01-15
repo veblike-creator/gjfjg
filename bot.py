@@ -209,12 +209,23 @@ class Database:
 # Telegraph загрузка
 async def upload_to_telegraph(photo_bytes):
     """Загружает фото на Telegraph и возвращает URL"""
-    response = requests.post(
-        'https://telegra.ph/upload',
-        files={'file': ('image.jpg', photo_bytes, 'image/jpeg')}
-    )
-    result = response.json()
-    return f"https://telegra.ph{result[0]['src']}"
+    try:
+        response = requests.post(
+            'https://telegra.ph/upload',
+            files={'file': ('image.jpg', photo_bytes, 'image/jpeg')}
+        )
+        result = response.json()
+
+        # Проверяем формат ответа
+        if isinstance(result, list) and len(result) > 0:
+            if 'src' in result[0]:
+                return f"https://telegra.ph{result[0]['src']}"
+
+        logger.error(f"Telegraph unexpected response: {result}")
+        return None
+    except Exception as e:
+        logger.error(f"Telegraph upload error: {e}")
+        return None
 
 # GenAPI функции
 async def generate_seededit(prompt, photo_path):
@@ -223,6 +234,11 @@ async def generate_seededit(prompt, photo_path):
         photo_bytes = photo_file.read()
 
         image_url = await upload_to_telegraph(photo_bytes)
+
+        if not image_url:
+            logger.error("Failed to upload image to Telegraph")
+            return None
+
         logger.info(f"Uploaded to Telegraph: {image_url}")
 
         payload = {
@@ -281,6 +297,7 @@ async def get_ai_response(prompt, model, user_id):
     try:
         history = await db.get_history(user_id, model)
 
+        # Используем AITunnel API с правильным форматом
         headers = {
             "Authorization": f"Bearer {AITUNNEL_KEY}",
             "Content-Type": "application/json"
@@ -293,6 +310,8 @@ async def get_ai_response(prompt, model, user_id):
             "messages": messages
         }
 
+        logger.info(f"Sending to AITunnel: model={model}")
+
         response = requests.post(
             "https://api.aitunnel.ru/v1/chat/completions",
             json=payload,
@@ -300,10 +319,19 @@ async def get_ai_response(prompt, model, user_id):
             timeout=60
         )
 
+        logger.info(f"AITunnel response: {response.status_code}")
+
         if response.status_code == 200:
             result = response.json()
-            return result["choices"][0]["message"]["content"]
+            ai_response = result["choices"][0]["message"]["content"]
+
+            # Сохраняем в историю
+            await db.add_message(user_id, model, "user", prompt)
+            await db.add_message(user_id, model, "assistant", ai_response)
+
+            return ai_response
         else:
+            logger.error(f"AITunnel error {response.status_code}: {response.text}")
             return f"❌ Ошибка API: {response.status_code}"
 
     except Exception as e:
@@ -694,9 +722,6 @@ async def handle_text(message: Message):
         await message.answer(response[4000:])
     else:
         await message.answer(f"🤖 {model_name}\n\n{response}")
-
-    await db.add_message(user_id, user['current_model'], "user", message.text)
-    await db.add_message(user_id, user['current_model'], "assistant", response)
 
 async def main():
     await db.connect()
